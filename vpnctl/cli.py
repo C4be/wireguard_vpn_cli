@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 from .bot import BotConfigError, run_bot
+from .fallback import (
+    FallbackOptions,
+    ensure_fallback,
+    export_fallback_profile,
+    fallback_status,
+)
 from .remote import Local, RemoteError
+from .service import BotServiceOptions, install_bot_service
 from .wireguard import (
     ServerOptions,
     add_peer,
@@ -63,6 +71,29 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="Show WireGuard device status")
     sub.add_parser("diagnose", help="Print WireGuard, network and firewall diagnostics")
     sub.add_parser("repair", help="Rewrite config and restart WireGuard from saved state")
+
+    fallback_setup = sub.add_parser(
+        "fallback-setup",
+        help="Install and configure TCP fallback transport with sing-box",
+    )
+    fallback_setup.add_argument("--endpoint", required=True)
+    fallback_setup.add_argument("--port", type=int, default=443)
+    fallback_setup.add_argument("--mtu", type=int, default=1280)
+
+    fallback_export = sub.add_parser(
+        "export-fallback",
+        help="Export a sing-box TCP fallback profile",
+    )
+    fallback_export.add_argument("name")
+    fallback_export.add_argument("--output-dir", default="configs")
+
+    sub.add_parser("fallback-status", help="Show sing-box fallback status")
+    install_service = sub.add_parser(
+        "install-bot-service",
+        help="Install and start vpnctl-bot systemd service from current env",
+    )
+    install_service.add_argument("--workdir", default=str(Path.cwd()))
+    install_service.add_argument("--python", default=sys.executable)
 
     restart = sub.add_parser("restart", help="Restart WireGuard or reboot the VPS")
     restart.add_argument(
@@ -205,6 +236,46 @@ def main(argv: list[str] | None = None) -> int:
                 f"{state['endpoint']}:{state['listen_port']} "
                 f"network={state['network']}"
             )
+            return 0
+
+        if args.command == "fallback-setup":
+            state = ensure_fallback(
+                remote,
+                FallbackOptions(
+                    endpoint=args.endpoint,
+                    port=args.port,
+                    mtu=args.mtu,
+                ),
+                progress=progress,
+            )
+            print(f"Fallback ready: {state['endpoint']}:{state['port']} tcp")
+            return 0
+
+        if args.command == "export-fallback":
+            path = export_fallback_profile(
+                remote,
+                args.name,
+                Path(args.output_dir),
+                progress=progress,
+            )
+            print(f"Exported fallback profile: {path}")
+            return 0
+
+        if args.command == "fallback-status":
+            print(fallback_status(remote))
+            return 0
+
+        if args.command == "install-bot-service":
+            path = install_bot_service(
+                remote,
+                BotServiceOptions(
+                    workdir=Path(args.workdir).resolve(),
+                    python=Path(args.python).resolve(),
+                    env=dict(os.environ),
+                ),
+                progress=progress,
+            )
+            print(f"Installed and started: {path}")
             return 0
 
         if args.command == "restart":

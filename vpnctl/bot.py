@@ -5,6 +5,12 @@ import os
 import tempfile
 from pathlib import Path
 
+from .fallback import (
+    FallbackOptions,
+    ensure_fallback,
+    export_fallback_profile,
+    fallback_status,
+)
 from .remote import Local
 from .wireguard import (
     ServerOptions,
@@ -108,7 +114,10 @@ async def _run_bot() -> None:
 
     user_keyboard = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="Получить конфиг")],
+            [
+                KeyboardButton(text="Получить WireGuard"),
+                KeyboardButton(text="Устойчивый профиль"),
+            ],
             [KeyboardButton(text="Помощь")],
         ],
         resize_keyboard=True,
@@ -116,15 +125,20 @@ async def _run_bot() -> None:
     admin_keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="Получить конфиг"),
-                KeyboardButton(text="Добавить устройство"),
+                KeyboardButton(text="Получить WireGuard"),
+                KeyboardButton(text="Устойчивый профиль"),
             ],
-            [KeyboardButton(text="Список устройств"), KeyboardButton(text="Статус VPN")],
             [
-                KeyboardButton(text="Починить VPN"),
-                KeyboardButton(text="Перезапустить VPN"),
+                KeyboardButton(text="Добавить устройство"),
+                KeyboardButton(text="Список устройств"),
             ],
-            [KeyboardButton(text="Диагностика"), KeyboardButton(text="Помощь")],
+            [KeyboardButton(text="Статус VPN"), KeyboardButton(text="Починить VPN")],
+            [
+                KeyboardButton(text="Перезапустить VPN"),
+                KeyboardButton(text="Настроить fallback"),
+            ],
+            [KeyboardButton(text="Статус fallback"), KeyboardButton(text="Диагностика")],
+            [KeyboardButton(text="Помощь")],
         ],
         resize_keyboard=True,
     )
@@ -154,18 +168,22 @@ async def _run_bot() -> None:
     async def help_handler(message: Message) -> None:
         await message.answer(
             "Напиши имя устройства, например: dima-iphone\n"
-            "Если такой пользователь есть, я отправлю WireGuard QR и .conf.\n\n"
+            "Если такой пользователь есть, я отправлю WireGuard QR и .conf.\n"
+            "Если Wi-Fi ломает UDP, нажми 'Устойчивый профиль' и импортируй JSON в sing-box.\n\n"
             "Важно: один конфиг WireGuard = одно физическое устройство.\n"
             "Для второго телефона создай отдельное имя.\n\n"
             "Админ-команды:\n"
             "/admin <пароль>\n"
             "/setup [endpoint]\n"
+            "/fallback_setup [endpoint]\n"
             "/add <name>\n"
+            "/fallback <name>\n"
             "/remove <name>\n"
             "/list\n"
             "/status\n"
             "/repair\n"
             "/restart\n"
+            "/fallback_status\n"
             "/diagnose"
             "\n\nСоздавай отдельное имя для каждого телефона или планшета.",
             reply_markup=keyboard_for(message),
@@ -221,6 +239,12 @@ async def _run_bot() -> None:
             + "\n".join(f"- {line}" for line in lines[-12:])
         )
 
+    @router.message(Command("fallback_setup"))
+    async def fallback_setup_handler(message: Message, command: CommandObject) -> None:
+        if not await require_admin(message):
+            return
+        await setup_fallback_from_bot(message, (command.args or "").strip() or endpoint)
+
     @router.message(Command("add"))
     async def add_handler(message: Message, command: CommandObject) -> None:
         if not await require_admin(message):
@@ -236,6 +260,14 @@ async def _run_bot() -> None:
             return
         await message.answer(f"Устройство готово: {peer['name']} {peer['address']}")
         await send_peer_files(message, name)
+
+    @router.message(Command("fallback"))
+    async def fallback_handler(message: Message, command: CommandObject) -> None:
+        name = (command.args or "").strip()
+        if not name:
+            await message.answer("Формат: /fallback dima-iphone")
+            return
+        await send_fallback_file(message, name)
 
     @router.message(Command("remove"))
     async def remove_handler(message: Message, command: CommandObject) -> None:
@@ -271,6 +303,12 @@ async def _run_bot() -> None:
         if not await require_admin(message):
             return
         await send_status(message)
+
+    @router.message(Command("fallback_status"))
+    async def fallback_status_handler(message: Message) -> None:
+        if not await require_admin(message):
+            return
+        await send_fallback_status(message)
 
     @router.message(Command("repair"))
     async def repair_handler(message: Message) -> None:
@@ -330,6 +368,31 @@ async def _run_bot() -> None:
         except Exception as exc:
             await message.answer(f"Не смог отправить конфиг: {exc}")
 
+    async def send_fallback_file(message: Message, name: str) -> None:
+        try:
+            validate_peer_name(name)
+            with tempfile.TemporaryDirectory(prefix="vpnctl-bot-") as tmp:
+                path = await run_blocking(
+                    export_fallback_profile,
+                    remote,
+                    name,
+                    Path(tmp),
+                )
+                await message.answer_document(
+                    BufferedInputFile(
+                        path.read_bytes(),
+                        filename=path.name,
+                    ),
+                    caption=(
+                        "Устойчивый профиль для sing-box: "
+                        f"{name}\nИмпортируй JSON в sing-box на телефоне."
+                    ),
+                )
+        except RuntimeError as exc:
+            await message.answer(f"{exc}")
+        except Exception as exc:
+            await message.answer(f"Не смог отправить fallback-профиль: {exc}")
+
     async def send_status(message: Message) -> None:
         try:
             statuses = await run_blocking(peer_status, remote)
@@ -355,6 +418,43 @@ async def _run_bot() -> None:
                 f"  rx={_format_bytes(item['rx'])}, tx={_format_bytes(item['tx'])}"
             )
         await message.answer("\n\n".join(lines))
+
+    async def setup_fallback_from_bot(message: Message, setup_endpoint: str) -> None:
+        if not setup_endpoint:
+            await message.answer(
+                "Укажи endpoint: /fallback_setup 151.244.251.86 или задай VPNCTL_ENDPOINT."
+            )
+            return
+        lines: list[str] = []
+        await message.answer("Настраиваю fallback через sing-box TCP 443...")
+        try:
+            state = await run_blocking(
+                ensure_fallback,
+                remote,
+                FallbackOptions(
+                    endpoint=setup_endpoint,
+                    port=443,
+                    mtu=mtu,
+                ),
+                progress=progress_to_lines(lines),
+            )
+        except Exception as exc:
+            await message.answer(_chunk_text(f"Fallback setup не удался:\n{exc}"))
+            return
+        await message.answer(
+            "Fallback готов.\n"
+            f"Endpoint: {state['endpoint']}:{state['port']} tcp\n\n"
+            + "\n".join(f"- {line}" for line in lines[-10:])
+        )
+
+    async def send_fallback_status(message: Message) -> None:
+        await message.answer("Проверяю fallback...")
+        try:
+            output = await run_blocking(fallback_status, remote)
+        except Exception as exc:
+            await message.answer(f"Не смог получить fallback status: {exc}")
+            return
+        await message.answer(_chunk_text(output))
 
     async def repair_vpn_from_bot(message: Message) -> None:
         await message.answer("Пересобираю конфиг и перезапускаю WireGuard...")
@@ -384,6 +484,9 @@ async def _run_bot() -> None:
         if action == "get_config":
             await send_peer_files(message, text.split()[0])
             return
+        if action == "get_fallback":
+            await send_fallback_file(message, text.split()[0])
+            return
         if action == "add_device":
             if not await require_admin(message):
                 return
@@ -410,8 +513,12 @@ async def _run_bot() -> None:
             )
             return
 
-        if text == "Получить конфиг":
+        if text in {"Получить конфиг", "Получить WireGuard"}:
             pending_actions[message.chat.id] = "get_config"
+            await message.answer("Напиши имя устройства, например dima-iphone.")
+            return
+        if text == "Устойчивый профиль":
+            pending_actions[message.chat.id] = "get_fallback"
             await message.answer("Напиши имя устройства, например dima-iphone.")
             return
         if text == "Добавить устройство":
@@ -439,6 +546,16 @@ async def _run_bot() -> None:
             if not await require_admin(message):
                 return
             await restart_handler(message)
+            return
+        if text == "Настроить fallback":
+            if not await require_admin(message):
+                return
+            await setup_fallback_from_bot(message, endpoint)
+            return
+        if text == "Статус fallback":
+            if not await require_admin(message):
+                return
+            await send_fallback_status(message)
             return
         if text == "Диагностика":
             if not await require_admin(message):
