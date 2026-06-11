@@ -49,6 +49,19 @@ What setup does:
   already active;
 - enables IPv4 forwarding and starts `wg-quick@wg0`.
 
+If a previous failed run left `wg0` behind while the systemd service is failed,
+vpnctl automatically stops the stale interface before starting WireGuard again.
+
+If the server private key was exposed in logs before masking was added, rotate it
+before creating users:
+
+```bash
+sudo python3 -m vpnctl setup \
+  --endpoint YOUR_VPS_PUBLIC_IP_OR_DOMAIN \
+  --ssh-port 22 \
+  --rotate-server-key
+```
+
 ## Add a phone or another user
 
 ```bash

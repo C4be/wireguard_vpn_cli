@@ -53,6 +53,11 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--network", default="10.66.66.0/24")
     setup.add_argument("--dns", default="1.1.1.1, 8.8.8.8")
     setup.add_argument("--mtu", type=int, default=1280)
+    setup.add_argument(
+        "--rotate-server-key",
+        action="store_true",
+        help="Rotate the WireGuard server key. Refuses to run if users exist.",
+    )
 
     add = sub.add_parser("add-user", help="Create a client config")
     add.add_argument("name")
@@ -130,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
                     network=args.network,
                     dns=args.dns,
                     mtu=args.mtu,
+                    rotate_server_key=args.rotate_server_key,
                 ),
                 progress=progress,
             )

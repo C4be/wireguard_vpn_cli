@@ -31,6 +31,7 @@ class ServerOptions:
     dns: str = "1.1.1.1, 8.8.8.8"
     mtu: int = 1280
     interface: str = "wg0"
+    rotate_server_key: bool = False
 
 
 def utc_now() -> str:
@@ -94,11 +95,27 @@ sysctl --system >/dev/null || true
     remote.run_root_script(install_script)
     emit(progress, "Base packages, firewall allowances and sysctl are ready")
 
+    emit(progress, "Loading existing vpnctl state")
+    existing_state = load_state(remote)
+    if options.rotate_server_key:
+        if existing_state and existing_state.get("peers"):
+            raise RuntimeError(
+                "Refusing to rotate the server key while users exist. "
+                "Remove users first, or rotate manually and re-export every client."
+            )
+        emit(progress, "Rotating WireGuard server key")
+        remote.run_root_script(
+            f"""
+set -euo pipefail
+umask 077
+wg genkey > {shlex.quote(SERVER_PRIVATE)}
+wg pubkey < {shlex.quote(SERVER_PRIVATE)} > {shlex.quote(SERVER_PUBLIC)}
+"""
+        )
+
     emit(progress, "Reading WireGuard server keys")
     private_key = remote.read_root_file(SERVER_PRIVATE).strip()
     public_key = remote.read_root_file(SERVER_PUBLIC).strip()
-    emit(progress, "Loading existing vpnctl state")
-    existing_state = load_state(remote)
 
     network = ipaddress.ip_network(options.network, strict=False)
     server_address = f"{network.network_address + 1}/{network.prefixlen}"
@@ -337,6 +354,7 @@ iptables -S FORWARD | grep wg0 || true
 
 def restart_wireguard(remote: Runner, progress: Progress | None = None) -> None:
     emit(progress, "Restarting wg-quick@wg0")
+    prepare_service_start(remote, progress)
     try:
         remote.run_root_script(
             """
@@ -430,6 +448,7 @@ fi
 
 def apply_service(remote: Runner, progress: Progress | None = None) -> None:
     emit(progress, "Enabling and restarting wg-quick@wg0")
+    prepare_service_start(remote, progress)
     try:
         remote.run_root_script(
             """
@@ -442,6 +461,24 @@ systemctl restart wg-quick@wg0
         raise RuntimeError(service_failure_report(remote)) from exc
 
 
+def prepare_service_start(remote: Runner, progress: Progress | None = None) -> None:
+    emit(progress, "Reconciling existing wg0 interface")
+    remote.run_root_script(
+        """
+set +e
+systemctl stop wg-quick@wg0 >/dev/null 2>&1
+if ip link show wg0 >/dev/null 2>&1; then
+  wg-quick down wg0 >/dev/null 2>&1
+fi
+if ip link show wg0 >/dev/null 2>&1; then
+  ip link delete wg0
+fi
+systemctl reset-failed wg-quick@wg0 >/dev/null 2>&1
+""",
+        check=False,
+    )
+
+
 def service_failure_report(remote: Runner) -> str:
     report = remote.run_root_script(
         f"""
@@ -449,7 +486,7 @@ set +e
 echo "WireGuard service failed to start. Details from the VPS:"
 echo
 echo "== wg-quick config check =="
-wg-quick strip wg0 2>&1
+wg-quick strip wg0 2>&1 | sed -E 's/(PrivateKey *= *).*/\\1<hidden>/g'
 echo
 echo "== systemctl status =="
 systemctl --no-pager --full status wg-quick@wg0 2>&1 | sed -n '1,80p'
