@@ -158,6 +158,13 @@ sudo -E .venv/bin/python -m vpnctl install-bot-service
 sudo systemctl status vpnctl-bot --no-pager -l
 ```
 
+If Telegram stops responding:
+
+```bash
+sudo -E .venv/bin/python -m vpnctl bot-status
+sudo -E .venv/bin/python -m vpnctl restart-bot
+```
+
 Admin commands in Telegram:
 
 ```text
@@ -255,6 +262,8 @@ sudo -E .venv/bin/python -m vpnctl fallback-setup --endpoint "$VPNCTL_ENDPOINT" 
 sudo -E .venv/bin/python -m vpnctl export-fallback dima-iphone
 sudo -E .venv/bin/python -m vpnctl fallback-status
 sudo -E .venv/bin/python -m vpnctl install-bot-service
+sudo -E .venv/bin/python -m vpnctl bot-status
+sudo -E .venv/bin/python -m vpnctl restart-bot
 sudo -E .venv/bin/python -m vpnctl diagnose
 ```
 

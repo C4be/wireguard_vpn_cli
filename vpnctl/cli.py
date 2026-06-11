@@ -13,7 +13,12 @@ from .fallback import (
     fallback_status,
 )
 from .remote import Local, RemoteError
-from .service import BotServiceOptions, install_bot_service
+from .service import (
+    BotServiceOptions,
+    bot_service_status,
+    install_bot_service,
+    restart_bot_service,
+)
 from .wireguard import (
     ServerOptions,
     add_peer,
@@ -94,6 +99,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     install_service.add_argument("--workdir", default=str(Path.cwd()))
     install_service.add_argument("--python", default=sys.executable)
+    sub.add_parser("bot-status", help="Show vpnctl-bot service status and logs")
+    sub.add_parser("restart-bot", help="Restart vpnctl-bot systemd service")
 
     restart = sub.add_parser("restart", help="Restart WireGuard or reboot the VPS")
     restart.add_argument(
@@ -276,6 +283,14 @@ def main(argv: list[str] | None = None) -> int:
                 progress=progress,
             )
             print(f"Installed and started: {path}")
+            return 0
+
+        if args.command == "bot-status":
+            print(bot_service_status(remote))
+            return 0
+
+        if args.command == "restart-bot":
+            print(restart_bot_service(remote, progress=progress))
             return 0
 
         if args.command == "restart":

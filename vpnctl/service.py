@@ -43,6 +43,44 @@ systemctl --no-pager --full status vpnctl-bot | sed -n '1,35p'
     return SERVICE_PATH
 
 
+def restart_bot_service(remote: Local, progress=None) -> str:
+    emit(progress, "Restarting vpnctl-bot")
+    return remote.run_root_script(
+        """
+set -euo pipefail
+systemctl restart vpnctl-bot
+systemctl --no-pager --full status vpnctl-bot 2>&1 | sed -n '1,45p'
+"""
+    )
+
+
+def bot_service_status(remote: Local) -> str:
+    return remote.run_root_script(
+        f"""
+set +e
+echo "== vpnctl-bot service =="
+systemctl --no-pager --full status vpnctl-bot 2>&1 | sed -n '1,80p'
+echo
+echo "== vpnctl-bot unit =="
+if [ -f {SERVICE_PATH} ]; then
+  sed -E \
+    -e 's/(VPNCTL_BOT_TOKEN=)[^ "]+/\\1<hidden>/g' \
+    -e 's/(VPNCTL_ADMIN_PASSWORD=)[^ "]+/\\1<hidden>/g' \
+    {SERVICE_PATH}
+else
+  echo "missing {SERVICE_PATH}"
+fi
+echo
+echo "== recent vpnctl-bot logs =="
+journalctl -u vpnctl-bot -n 120 --no-pager 2>&1
+echo
+echo "== running bot processes =="
+ps -eo pid,ppid,cmd | grep -E '[p]ython.*vpnctl bot|[v]pnctl bot'
+""",
+        check=False,
+    )
+
+
 def service_unit(options: BotServiceOptions) -> str:
     env_names = [
         "VPNCTL_BOT_TOKEN",
@@ -59,7 +97,7 @@ def service_unit(options: BotServiceOptions) -> str:
     for name in env_names:
         value = options.env.get(name, "").strip()
         if value:
-            env_lines.append(f"Environment={name}={_systemd_quote(value)}")
+            env_lines.append(f"Environment={_systemd_quote(f'{name}={value}')}")
 
     return (
         "[Unit]\n"
