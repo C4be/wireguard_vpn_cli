@@ -276,8 +276,8 @@ def main(argv: list[str] | None = None) -> int:
             path = install_bot_service(
                 remote,
                 BotServiceOptions(
-                    workdir=Path(args.workdir).resolve(),
-                    python=Path(args.python).resolve(),
+                    workdir=_absolute_path(args.workdir),
+                    python=_absolute_path(args.python),
                     env=dict(os.environ),
                 ),
                 progress=progress,
@@ -308,6 +308,13 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.error("unknown command")
     return 2
+
+
+def _absolute_path(value: str) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return Path.cwd() / path
 
 
 if __name__ == "__main__":
