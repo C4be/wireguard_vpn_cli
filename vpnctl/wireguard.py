@@ -332,6 +332,7 @@ command -v docker >/dev/null 2>&1 && docker --version || echo "docker: not insta
 echo
 echo "== network =="
 ip route show default
+sysctl net.ipv4.ip_forward
 ss -lunp | grep -E "(:$WG_PORT|wireguard)" || true
 echo
 echo "== wireguard service =="
@@ -345,6 +346,10 @@ command -v ufw >/dev/null 2>&1 && ufw status verbose || true
 command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --list-all || true
 iptables -t nat -S | grep -E '(MASQUERADE|wg0)' || true
 iptables -S FORWARD | grep wg0 || true
+echo
+echo "== firewall counters =="
+iptables -vnL FORWARD 2>&1
+iptables -t nat -vnL POSTROUTING 2>&1
 """,
         check=False,
     )
@@ -421,14 +426,28 @@ AllowedIPs = {peer['address']}
 """
         )
     peer_text = "\n".join(peer_blocks).strip()
+    post_up_lines = [
+        "sysctl -w net.ipv4.ip_forward=1 >/dev/null",
+        f"iptables -w -C FORWARD -i {interface} -o {default_interface} -j ACCEPT 2>/dev/null || iptables -w -A FORWARD -i {interface} -o {default_interface} -j ACCEPT",
+        f"iptables -w -C FORWARD -i {default_interface} -o {interface} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -w -A FORWARD -i {default_interface} -o {interface} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+        f"iptables -w -t nat -C POSTROUTING -s {network} -o {default_interface} -j MASQUERADE 2>/dev/null || iptables -w -t nat -A POSTROUTING -s {network} -o {default_interface} -j MASQUERADE",
+    ]
+    post_down_lines = [
+        f"iptables -w -D FORWARD -i {interface} -o {default_interface} -j ACCEPT 2>/dev/null || true",
+        f"iptables -w -D FORWARD -i {default_interface} -o {interface} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true",
+        f"iptables -w -t nat -D POSTROUTING -s {network} -o {default_interface} -j MASQUERADE 2>/dev/null || true",
+    ]
+    post_up = "\n".join(f"PostUp = {line}" for line in post_up_lines)
+    post_down = "\n".join(f"PostDown = {line}" for line in post_down_lines)
     config = f"""{MANAGED_MARKER}
 [Interface]
 Address = {state['server_address']}
 ListenPort = {port}
 PrivateKey = {private_key}
+MTU = {state['mtu']}
 SaveConfig = false
-PostUp = sysctl -w net.ipv4.ip_forward=1; iptables -C FORWARD -i {interface} -j ACCEPT || iptables -A FORWARD -i {interface} -j ACCEPT; iptables -C FORWARD -o {interface} -j ACCEPT || iptables -A FORWARD -o {interface} -j ACCEPT; iptables -t nat -C POSTROUTING -s {network} -o {default_interface} -j MASQUERADE || iptables -t nat -A POSTROUTING -s {network} -o {default_interface} -j MASQUERADE
-PostDown = iptables -D FORWARD -i {interface} -j ACCEPT || true; iptables -D FORWARD -o {interface} -j ACCEPT || true; iptables -t nat -D POSTROUTING -s {network} -o {default_interface} -j MASQUERADE || true
+{post_up}
+{post_down}
 
 {peer_text}
 """.rstrip() + "\n"
@@ -462,8 +481,15 @@ systemctl restart wg-quick@wg0
 def prepare_service_start(remote: Runner, progress: Progress | None = None) -> None:
     emit(progress, "Reconciling existing wg0 interface")
     remote.run_root_script(
-        """
+        f"""
 set +e
+OUT_IF="$(ip route show default | awk '{{print $5; exit}}')"
+[ -n "$OUT_IF" ] || OUT_IF="eth0"
+WG_NET="10.66.66.0/24"
+if [ -f {shlex.quote(STATE_FILE)} ]; then
+  DETECTED_NET="$(sed -n 's/.*"network": *"\\([^"]*\\)".*/\\1/p' {shlex.quote(STATE_FILE)} | head -n1)"
+  [ -n "$DETECTED_NET" ] && WG_NET="$DETECTED_NET"
+fi
 systemctl stop wg-quick@wg0 >/dev/null 2>&1
 if ip link show wg0 >/dev/null 2>&1; then
   wg-quick down wg0 >/dev/null 2>&1
@@ -471,6 +497,12 @@ fi
 if ip link show wg0 >/dev/null 2>&1; then
   ip link delete wg0
 fi
+while iptables -w -D FORWARD -i wg0 -j ACCEPT 2>/dev/null; do :; done
+while iptables -w -D FORWARD -o wg0 -j ACCEPT 2>/dev/null; do :; done
+while iptables -w -D FORWARD -i wg0 -o "$OUT_IF" -j ACCEPT 2>/dev/null; do :; done
+while iptables -w -D FORWARD -i "$OUT_IF" -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do :; done
+while iptables -w -D FORWARD -i "$OUT_IF" -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do :; done
+while iptables -w -t nat -D POSTROUTING -s "$WG_NET" -o "$OUT_IF" -j MASQUERADE 2>/dev/null; do :; done
 systemctl reset-failed wg-quick@wg0 >/dev/null 2>&1
 """,
         check=False,
