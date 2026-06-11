@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from .remote import Local, Remote, RemoteError
+from .remote import Local, RemoteError
 
 STATE_DIR = "/etc/wireguard/vpnctl"
 STATE_FILE = f"{STATE_DIR}/server.json"
@@ -19,7 +19,7 @@ SERVER_PUBLIC = f"{STATE_DIR}/server_public.key"
 MANAGED_MARKER = "# Managed by vpnctl"
 PEER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 Progress = Callable[[str], None]
-Runner = Remote | Local
+Runner = Local
 
 
 @dataclass(frozen=True)
@@ -179,7 +179,6 @@ def save_state(remote: Runner, state: dict[str, Any]) -> None:
 def add_peer(
     remote: Runner,
     name: str,
-    email: str | None = None,
     progress: Progress | None = None,
 ) -> dict[str, Any]:
     emit(progress, f"Validating user name: {name}")
@@ -217,7 +216,6 @@ def add_peer(
     ).stdout.decode().strip()
     peer = {
         "name": name,
-        "email": email,
         "address": address,
         "private_key": private_key,
         "public_key": public_key,
