@@ -25,7 +25,11 @@ On the VPS:
 
 ```bash
 cd /root/vpn/wireguard_vpn_cli
-python3 -m pip install -e '.[bot]'
+apt update
+apt install -y python3-pip python3-venv
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e '.[bot]'
 ```
 
 ## Environment
@@ -57,7 +61,7 @@ WireGuard profiles.
 You can run setup from the terminal:
 
 ```bash
-sudo -E python3 -m vpnctl setup --endpoint "$VPNCTL_ENDPOINT" --ssh-port 22
+sudo -E .venv/bin/python -m vpnctl setup --endpoint "$VPNCTL_ENDPOINT" --ssh-port 22
 ```
 
 Or from Telegram after starting the bot:
@@ -71,7 +75,7 @@ If the old server private key was exposed in logs before masking was added, and
 you have no users yet, rotate it:
 
 ```bash
-sudo -E python3 -m vpnctl setup \
+sudo -E .venv/bin/python -m vpnctl setup \
   --endpoint "$VPNCTL_ENDPOINT" \
   --ssh-port 22 \
   --rotate-server-key
@@ -82,7 +86,7 @@ sudo -E python3 -m vpnctl setup \
 Foreground run:
 
 ```bash
-sudo -E python3 -m vpnctl bot
+sudo -E .venv/bin/python -m vpnctl bot
 ```
 
 Admin commands in Telegram:
@@ -121,7 +125,7 @@ WorkingDirectory=/root/vpn/wireguard_vpn_cli
 Environment=VPNCTL_BOT_TOKEN=123456:telegram-bot-token
 Environment=VPNCTL_ADMIN_PASSWORD=long-random-admin-password
 Environment=VPNCTL_ENDPOINT=151.244.251.86
-ExecStart=/usr/bin/python3 -m vpnctl bot
+ExecStart=/root/vpn/wireguard_vpn_cli/.venv/bin/python -m vpnctl bot
 Restart=always
 RestartSec=5
 
@@ -142,12 +146,12 @@ sudo systemctl status vpnctl-bot --no-pager -l
 These commands still work directly on the VPS:
 
 ```bash
-sudo -E python3 -m vpnctl add-user dima --qr
-sudo -E python3 -m vpnctl export-user dima --qr
-sudo -E python3 -m vpnctl remove-user dima
-sudo -E python3 -m vpnctl list-users
-sudo -E python3 -m vpnctl restart
-sudo -E python3 -m vpnctl diagnose
+sudo -E .venv/bin/python -m vpnctl add-user dima --qr
+sudo -E .venv/bin/python -m vpnctl export-user dima --qr
+sudo -E .venv/bin/python -m vpnctl remove-user dima
+sudo -E .venv/bin/python -m vpnctl list-users
+sudo -E .venv/bin/python -m vpnctl restart
+sudo -E .venv/bin/python -m vpnctl diagnose
 ```
 
 ## Notes
