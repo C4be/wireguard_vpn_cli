@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from .remote import Local, Remote
+from .remote import Local, Remote, RemoteError
 
 STATE_DIR = "/etc/wireguard/vpnctl"
 STATE_FILE = f"{STATE_DIR}/server.json"
@@ -337,13 +337,16 @@ iptables -S FORWARD | grep wg0 || true
 
 def restart_wireguard(remote: Runner, progress: Progress | None = None) -> None:
     emit(progress, "Restarting wg-quick@wg0")
-    remote.run_root_script(
-        """
+    try:
+        remote.run_root_script(
+            """
 set -euo pipefail
 systemctl restart wg-quick@wg0
 systemctl --no-pager --full status wg-quick@wg0 | sed -n '1,20p'
 """
-    )
+        )
+    except RemoteError as exc:
+        raise RuntimeError(service_failure_report(remote)) from exc
     emit(progress, "WireGuard service restarted")
 
 
@@ -427,10 +430,46 @@ fi
 
 def apply_service(remote: Runner, progress: Progress | None = None) -> None:
     emit(progress, "Enabling and restarting wg-quick@wg0")
-    remote.run_root_script(
-        """
+    try:
+        remote.run_root_script(
+            """
 set -euo pipefail
 systemctl enable wg-quick@wg0 >/dev/null
 systemctl restart wg-quick@wg0
 """
-    )
+        )
+    except RemoteError as exc:
+        raise RuntimeError(service_failure_report(remote)) from exc
+
+
+def service_failure_report(remote: Runner) -> str:
+    report = remote.run_root_script(
+        f"""
+set +e
+echo "WireGuard service failed to start. Details from the VPS:"
+echo
+echo "== wg-quick config check =="
+wg-quick strip wg0 2>&1
+echo
+echo "== systemctl status =="
+systemctl --no-pager --full status wg-quick@wg0 2>&1 | sed -n '1,80p'
+echo
+echo "== recent journal =="
+journalctl -u wg-quick@wg0 -n 80 --no-pager 2>&1
+echo
+echo "== udp listeners =="
+ss -lunp 2>&1 | sed -n '1,80p'
+echo
+echo "== wg0 interface =="
+ip link show wg0 2>&1
+echo
+echo "== sanitized /etc/wireguard/wg0.conf =="
+if [ -f {shlex.quote(WG_CONF)} ]; then
+  sed -E 's/(PrivateKey *= *).*/\\1<hidden>/g' {shlex.quote(WG_CONF)}
+else
+  echo "missing {WG_CONF}"
+fi
+""",
+        check=False,
+    ).strip()
+    return report or "WireGuard service failed to start, but no diagnostics were returned."
