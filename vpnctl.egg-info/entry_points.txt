@@ -1,0 +1,2 @@
+[console_scripts]
+vpnctl = vpnctl.cli:main

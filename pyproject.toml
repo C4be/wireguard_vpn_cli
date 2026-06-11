@@ -11,6 +11,10 @@ bot = ["aiogram>=3.0,<4.0"]
 [project.scripts]
 vpnctl = "vpnctl.cli:main"
 
+[tool.setuptools.packages.find]
+include = ["vpnctl*"]
+exclude = ["configs*"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+vpnctl/__init__.py
+vpnctl/__main__.py
+vpnctl/bot.py
+vpnctl/cli.py
+vpnctl/remote.py
+vpnctl/wireguard.py
+vpnctl.egg-info/PKG-INFO
+vpnctl.egg-info/SOURCES.txt
+vpnctl.egg-info/dependency_links.txt
+vpnctl.egg-info/entry_points.txt
+vpnctl.egg-info/requires.txt
+vpnctl.egg-info/top_level.txt

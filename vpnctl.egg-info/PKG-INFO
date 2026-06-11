@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: vpnctl
+Version: 0.1.0
+Summary: Local WireGuard VPS manager with a Telegram bot
+Requires-Python: >=3.10
+Provides-Extra: bot
+Requires-Dist: aiogram<4.0,>=3.0; extra == "bot"

@@ -32,6 +32,9 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[bot]'
 ```
 
+The package config explicitly includes only `vpnctl`, so generated folders like
+`configs/` do not break editable installation.
+
 ## Environment
 
 Set these before starting the bot:
