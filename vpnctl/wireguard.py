@@ -7,9 +7,9 @@ import shlex
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from .remote import Remote
+from .remote import Local, Remote
 
 STATE_DIR = "/etc/wireguard/vpnctl"
 STATE_FILE = f"{STATE_DIR}/server.json"
@@ -18,6 +18,8 @@ SERVER_PRIVATE = f"{STATE_DIR}/server_private.key"
 SERVER_PUBLIC = f"{STATE_DIR}/server_public.key"
 MANAGED_MARKER = "# Managed by vpnctl"
 PEER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+Progress = Callable[[str], None]
+Runner = Remote | Local
 
 
 @dataclass(frozen=True)
@@ -35,7 +37,12 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def ensure_server(remote: Remote, options: ServerOptions) -> dict[str, Any]:
+def ensure_server(
+    remote: Runner,
+    options: ServerOptions,
+    progress: Progress | None = None,
+) -> dict[str, Any]:
+    emit(progress, "Checking packages and preparing the server")
     install_script = f"""
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -85,9 +92,12 @@ printf 'net.ipv4.ip_forward=1\\n' > /etc/sysctl.d/99-vpnctl-wireguard.conf
 sysctl --system >/dev/null || true
 """
     remote.run_root_script(install_script)
+    emit(progress, "Base packages, firewall allowances and sysctl are ready")
 
+    emit(progress, "Reading WireGuard server keys")
     private_key = remote.read_root_file(SERVER_PRIVATE).strip()
     public_key = remote.read_root_file(SERVER_PUBLIC).strip()
+    emit(progress, "Loading existing vpnctl state")
     existing_state = load_state(remote)
 
     network = ipaddress.ip_network(options.network, strict=False)
@@ -120,13 +130,15 @@ sysctl --system >/dev/null || true
             "updated_at": utc_now(),
         }
     )
+    emit(progress, f"Saving managed state in {STATE_FILE}")
     save_state(remote, state)
-    write_server_config(remote, state, private_key)
-    apply_service(remote)
+    write_server_config(remote, state, private_key, progress=progress)
+    apply_service(remote, progress=progress)
+    emit(progress, "WireGuard setup completed")
     return state
 
 
-def load_state(remote: Remote) -> dict[str, Any] | None:
+def load_state(remote: Runner) -> dict[str, Any] | None:
     result = remote.run_root_script(
         f"""
 set -euo pipefail
@@ -142,18 +154,27 @@ fi
     return json.loads(data)
 
 
-def save_state(remote: Remote, state: dict[str, Any]) -> None:
+def save_state(remote: Runner, state: dict[str, Any]) -> None:
     payload = json.dumps(state, indent=2, sort_keys=True) + "\n"
     remote.write_root_file(STATE_FILE, payload, "0600")
 
 
-def add_peer(remote: Remote, name: str, email: str | None = None) -> dict[str, Any]:
+def add_peer(
+    remote: Runner,
+    name: str,
+    email: str | None = None,
+    progress: Progress | None = None,
+) -> dict[str, Any]:
+    emit(progress, f"Validating user name: {name}")
     validate_peer_name(name)
+    emit(progress, "Loading server state")
     state = require_state(remote)
     peers = state.setdefault("peers", {})
     if name in peers:
+        emit(progress, f"User already exists: {name}")
         return peers[name]
 
+    emit(progress, "Allocating client address")
     network = ipaddress.ip_network(state["network"], strict=False)
     used = {
         ipaddress.ip_interface(peer["address"]).ip
@@ -170,6 +191,7 @@ def add_peer(remote: Remote, name: str, email: str | None = None) -> dict[str, A
     if not address:
         raise RuntimeError(f"No free addresses left in {state['network']}")
 
+    emit(progress, "Generating client keys")
     private_key = remote.run_root_script("wg genkey").strip()
     public_key = remote.run(
         "wg pubkey",
@@ -186,25 +208,37 @@ def add_peer(remote: Remote, name: str, email: str | None = None) -> dict[str, A
     }
     peers[name] = peer
     state["updated_at"] = utc_now()
+    emit(progress, "Saving user state")
     save_state(remote, state)
+    emit(progress, "Rebuilding WireGuard server config")
     private = remote.read_root_file(SERVER_PRIVATE).strip()
-    write_server_config(remote, state, private)
-    apply_service(remote)
+    write_server_config(remote, state, private, progress=progress)
+    apply_service(remote, progress=progress)
+    emit(progress, f"User is ready: {name} ({address})")
     return peer
 
 
-def remove_peer(remote: Remote, name: str) -> bool:
+def remove_peer(
+    remote: Runner,
+    name: str,
+    progress: Progress | None = None,
+) -> bool:
+    emit(progress, f"Validating user name: {name}")
     validate_peer_name(name)
+    emit(progress, "Loading server state")
     state = require_state(remote)
     peers = state.setdefault("peers", {})
     if name not in peers:
+        emit(progress, f"User not found: {name}")
         return False
     del peers[name]
     state["updated_at"] = utc_now()
+    emit(progress, "Saving user removal")
     save_state(remote, state)
     private = remote.read_root_file(SERVER_PRIVATE).strip()
-    write_server_config(remote, state, private)
-    apply_service(remote)
+    write_server_config(remote, state, private, progress=progress)
+    apply_service(remote, progress=progress)
+    emit(progress, f"User removed: {name}")
     return True
 
 
@@ -225,12 +259,14 @@ PersistentKeepalive = 25
 
 
 def export_peer(
-    remote: Remote,
+    remote: Runner,
     name: str,
     output_dir: Path,
     *,
     with_qr: bool = False,
+    progress: Progress | None = None,
 ) -> tuple[Path, Path | None]:
+    emit(progress, f"Preparing export for user: {name}")
     validate_peer_name(name)
     state = require_state(remote)
     peer = state.get("peers", {}).get(name)
@@ -239,20 +275,27 @@ def export_peer(
     output_dir.mkdir(parents=True, exist_ok=True)
     conf_path = output_dir / f"{name}.conf"
     conf = client_config(state, peer)
+    emit(progress, f"Writing client config: {conf_path}")
     conf_path.write_text(conf, encoding="utf-8")
     qr_path = None
     if with_qr:
         qr_path = output_dir / f"{name}.png"
+        emit(progress, f"Generating QR code: {qr_path}")
         qr_path.write_bytes(remote.qr_png(conf))
     return conf_path, qr_path
 
 
-def list_peers(remote: Remote) -> list[dict[str, Any]]:
+def list_peers(
+    remote: Runner,
+    progress: Progress | None = None,
+) -> list[dict[str, Any]]:
+    emit(progress, "Loading users")
     state = require_state(remote)
     return sorted(state.get("peers", {}).values(), key=lambda item: item["name"])
 
 
-def diagnose(remote: Remote) -> str:
+def diagnose(remote: Runner, progress: Progress | None = None) -> str:
+    emit(progress, "Collecting diagnostics")
     return remote.run_root_script(
         f"""
 set +e
@@ -292,7 +335,8 @@ iptables -S FORWARD | grep wg0 || true
     )
 
 
-def restart_wireguard(remote: Remote) -> None:
+def restart_wireguard(remote: Runner, progress: Progress | None = None) -> None:
+    emit(progress, "Restarting wg-quick@wg0")
     remote.run_root_script(
         """
 set -euo pipefail
@@ -300,9 +344,11 @@ systemctl restart wg-quick@wg0
 systemctl --no-pager --full status wg-quick@wg0 | sed -n '1,20p'
 """
     )
+    emit(progress, "WireGuard service restarted")
 
 
-def reboot_server(remote: Remote) -> None:
+def reboot_server(remote: Runner, progress: Progress | None = None) -> None:
+    emit(progress, "Requesting VPS reboot")
     remote.run_root_script(
         """
 set -euo pipefail
@@ -311,11 +357,16 @@ nohup sh -c 'sleep 2; reboot' >/dev/null 2>&1 &
     )
 
 
-def require_state(remote: Remote) -> dict[str, Any]:
+def require_state(remote: Runner) -> dict[str, Any]:
     state = load_state(remote)
     if not state:
         raise RuntimeError("Server is not initialized. Run setup first.")
     return state
+
+
+def emit(progress: Progress | None, message: str) -> None:
+    if progress:
+        progress(message)
 
 
 def validate_peer_name(name: str) -> None:
@@ -326,7 +377,13 @@ def validate_peer_name(name: str) -> None:
         )
 
 
-def write_server_config(remote: Remote, state: dict[str, Any], private_key: str) -> None:
+def write_server_config(
+    remote: Runner,
+    state: dict[str, Any],
+    private_key: str,
+    progress: Progress | None = None,
+) -> None:
+    emit(progress, "Detecting default network interface")
     default_interface = remote.run_text(
         "ip route show default | awk '{print $5; exit}'",
         check=False,
@@ -358,15 +415,18 @@ PostDown = iptables -D FORWARD -i {interface} -j ACCEPT || true; iptables -D FOR
 """.rstrip() + "\n"
     backup_script = f"""
 set -euo pipefail
-if [ -f {shlex.quote(WG_CONF)} ] && ! grep -q {shlex.quote(MANAGED_MARKER)} {shlex.quote(WG_CONF)}; then
+    if [ -f {shlex.quote(WG_CONF)} ] && ! grep -q {shlex.quote(MANAGED_MARKER)} {shlex.quote(WG_CONF)}; then
   cp {shlex.quote(WG_CONF)} {shlex.quote(WG_CONF)}.vpnctl-backup.$(date +%Y%m%d%H%M%S)
 fi
 """
+    emit(progress, f"Backing up unmanaged {WG_CONF} if needed")
     remote.run_root_script(backup_script)
+    emit(progress, f"Writing {WG_CONF}")
     remote.write_root_file(WG_CONF, config, "0600")
 
 
-def apply_service(remote: Remote) -> None:
+def apply_service(remote: Runner, progress: Progress | None = None) -> None:
+    emit(progress, "Enabling and restarting wg-quick@wg0")
     remote.run_root_script(
         """
 set -euo pipefail

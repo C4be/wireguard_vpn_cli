@@ -23,6 +23,23 @@ sudo python3 -m vpnctl setup \
   --ssh-port 22
 ```
 
+During long operations, vpnctl prints progress messages like:
+
+```text
+[vpnctl] Mode: local VPS
+[vpnctl] Starting setup
+[vpnctl] Checking packages and preparing the server
+[vpnctl] Base packages, firewall allowances and sysctl are ready
+[vpnctl] Writing /etc/wireguard/wg0.conf
+[vpnctl] Enabling and restarting wg-quick@wg0
+```
+
+Use `--quiet` before the command name if you need machine-friendly output:
+
+```bash
+sudo python3 -m vpnctl --quiet list-users
+```
+
 What setup does:
 
 - installs `wireguard-tools`, `iptables` and `qrencode` when missing;

@@ -36,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--user", default="root", help="SSH user, default: root")
     parser.add_argument("--port", type=int, default=22, help="SSH port, default: 22")
     parser.add_argument("--identity", help="Path to SSH private key")
+    parser.add_argument("--quiet", action="store_true", help="Hide progress messages")
 
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -94,13 +95,26 @@ def make_remote(args: argparse.Namespace) -> Remote | Local:
     )
 
 
+class ProgressPrinter:
+    def __init__(self, enabled: bool = True) -> None:
+        self.enabled = enabled
+
+    def __call__(self, message: str) -> None:
+        if self.enabled:
+            print(f"[vpnctl] {message}", flush=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     remote = make_remote(args)
+    progress = ProgressPrinter(enabled=not args.quiet)
+    mode = "local VPS" if isinstance(remote, Local) else f"SSH {remote.target}"
+    progress(f"Mode: {mode}")
 
     try:
         if args.command == "setup":
+            progress("Starting setup")
             endpoint = args.endpoint or args.host
             if not endpoint:
                 raise RuntimeError(
@@ -117,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
                     dns=args.dns,
                     mtu=args.mtu,
                 ),
+                progress=progress,
             )
             print(
                 "WireGuard is ready: "
@@ -126,39 +141,44 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "add-user":
-            add_peer(remote, args.name, email=args.email)
+            progress(f"Adding user: {args.name}")
+            add_peer(remote, args.name, email=args.email, progress=progress)
             conf_path, qr_path = export_peer(
                 remote,
                 args.name,
                 Path(args.output_dir),
                 with_qr=args.qr or args.send_email,
+                progress=progress,
             )
-            maybe_email(args, conf_path, qr_path)
+            maybe_email(args, conf_path, qr_path, progress)
             print(f"Created {args.name}: {conf_path}")
             if qr_path:
                 print(f"QR: {qr_path}")
             return 0
 
         if args.command == "remove-user":
-            removed = remove_peer(remote, args.name)
+            progress(f"Removing user: {args.name}")
+            removed = remove_peer(remote, args.name, progress=progress)
             print(f"Removed {args.name}" if removed else f"{args.name} was not found")
             return 0
 
         if args.command == "export-user":
+            progress(f"Exporting user: {args.name}")
             conf_path, qr_path = export_peer(
                 remote,
                 args.name,
                 Path(args.output_dir),
                 with_qr=args.qr or args.send_email,
+                progress=progress,
             )
-            maybe_email(args, conf_path, qr_path)
+            maybe_email(args, conf_path, qr_path, progress)
             print(f"Exported {args.name}: {conf_path}")
             if qr_path:
                 print(f"QR: {qr_path}")
             return 0
 
         if args.command == "list-users":
-            peers = list_peers(remote)
+            peers = list_peers(remote, progress=progress)
             if not peers:
                 print("No users yet.")
                 return 0
@@ -168,15 +188,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "diagnose":
-            print(diagnose(remote))
+            print(diagnose(remote, progress=progress))
             return 0
 
         if args.command == "restart":
             if args.reboot:
-                reboot_server(remote)
+                reboot_server(remote, progress=progress)
                 print("Reboot requested. SSH may be unavailable for a minute.")
             else:
-                restart_wireguard(remote)
+                restart_wireguard(remote, progress=progress)
                 print("WireGuard restarted.")
             return 0
 
@@ -188,9 +208,15 @@ def main(argv: list[str] | None = None) -> int:
     return 2
 
 
-def maybe_email(args: argparse.Namespace, conf_path: Path, qr_path: Path | None) -> None:
+def maybe_email(
+    args: argparse.Namespace,
+    conf_path: Path,
+    qr_path: Path | None,
+    progress: ProgressPrinter,
+) -> None:
     if not getattr(args, "send_email", False):
         return
+    progress(f"Sending email to {args.email}")
     send_config_email(
         recipient=args.email,
         subject=f"WireGuard config: {conf_path.stem}",
