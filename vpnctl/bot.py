@@ -13,6 +13,8 @@ from .wireguard import (
     ensure_server,
     export_peer,
     list_peers,
+    peer_status,
+    repair_vpn,
     remove_peer,
     restart_wireguard,
     validate_peer_name,
@@ -27,13 +29,31 @@ def _load_aiogram():
     try:
         from aiogram import Bot, Dispatcher, F, Router
         from aiogram.filters import Command, CommandObject
-        from aiogram.types import BufferedInputFile, FSInputFile, Message
+        from aiogram.types import (
+            BufferedInputFile,
+            FSInputFile,
+            KeyboardButton,
+            Message,
+            ReplyKeyboardMarkup,
+        )
     except ImportError as exc:
         raise BotConfigError(
             "aiogram is not installed. Install bot dependencies with: "
             "python3 -m pip install -e '.[bot]'"
         ) from exc
-    return Bot, Dispatcher, F, Router, Command, CommandObject, BufferedInputFile, FSInputFile, Message
+    return (
+        Bot,
+        Dispatcher,
+        F,
+        Router,
+        Command,
+        CommandObject,
+        BufferedInputFile,
+        FSInputFile,
+        KeyboardButton,
+        Message,
+        ReplyKeyboardMarkup,
+    )
 
 
 def _env_required(name: str) -> str:
@@ -67,7 +87,9 @@ async def _run_bot() -> None:
         CommandObject,
         BufferedInputFile,
         FSInputFile,
+        KeyboardButton,
         Message,
+        ReplyKeyboardMarkup,
     ) = _load_aiogram()
 
     token = _env_required("VPNCTL_BOT_TOKEN")
@@ -82,6 +104,30 @@ async def _run_bot() -> None:
     remote = Local()
     router = Router()
     admin_chats = _admin_chat_ids()
+    pending_actions: dict[int, str] = {}
+
+    user_keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Получить конфиг")],
+            [KeyboardButton(text="Помощь")],
+        ],
+        resize_keyboard=True,
+    )
+    admin_keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="Получить конфиг"),
+                KeyboardButton(text="Добавить устройство"),
+            ],
+            [KeyboardButton(text="Список устройств"), KeyboardButton(text="Статус VPN")],
+            [
+                KeyboardButton(text="Починить VPN"),
+                KeyboardButton(text="Перезапустить VPN"),
+            ],
+            [KeyboardButton(text="Диагностика"), KeyboardButton(text="Помощь")],
+        ],
+        resize_keyboard=True,
+    )
 
     def is_admin(message: Message) -> bool:
         return message.chat.id in admin_chats
@@ -91,6 +137,9 @@ async def _run_bot() -> None:
             return True
         await message.answer("Нужны права администратора. Напиши: /admin <пароль>")
         return False
+
+    def keyboard_for(message: Message):
+        return admin_keyboard if is_admin(message) else user_keyboard
 
     async def run_blocking(func, *args, **kwargs):
         return await asyncio.to_thread(func, *args, **kwargs)
@@ -114,8 +163,12 @@ async def _run_bot() -> None:
             "/add <name>\n"
             "/remove <name>\n"
             "/list\n"
+            "/status\n"
+            "/repair\n"
             "/restart\n"
             "/diagnose"
+            "\n\nСоздавай отдельное имя для каждого телефона или планшета.",
+            reply_markup=keyboard_for(message),
         )
 
     @router.message(Command("admin"))
@@ -130,6 +183,7 @@ async def _run_bot() -> None:
         except Exception:
             pass
         await message.answer("Админ-доступ включен для этого чата.")
+        await message.answer("Выбери действие:", reply_markup=admin_keyboard)
 
     @router.message(Command("setup"))
     async def setup_handler(message: Message, command: CommandObject) -> None:
@@ -137,7 +191,9 @@ async def _run_bot() -> None:
             return
         setup_endpoint = (command.args or "").strip() or endpoint
         if not setup_endpoint:
-            await message.answer("Укажи endpoint: /setup 151.244.251.86 или задай VPNCTL_ENDPOINT.")
+            await message.answer(
+                "Укажи endpoint: /setup 151.244.251.86 или задай VPNCTL_ENDPOINT."
+            )
             return
         lines: list[str] = []
         await message.answer("Начинаю настройку WireGuard...")
@@ -176,9 +232,9 @@ async def _run_bot() -> None:
         try:
             peer = await run_blocking(add_peer, remote, name)
         except Exception as exc:
-            await message.answer(f"Не смог добавить пользователя: {exc}")
+            await message.answer(f"Не смог добавить устройство: {exc}")
             return
-        await message.answer(f"Пользователь готов: {peer['name']} {peer['address']}")
+        await message.answer(f"Устройство готово: {peer['name']} {peer['address']}")
         await send_peer_files(message, name)
 
     @router.message(Command("remove"))
@@ -209,6 +265,18 @@ async def _run_bot() -> None:
             await message.answer("Пользователей пока нет.")
             return
         await message.answer("\n".join(f"{p['name']}: {p['address']}" for p in peers))
+
+    @router.message(Command("status"))
+    async def status_handler(message: Message) -> None:
+        if not await require_admin(message):
+            return
+        await send_status(message)
+
+    @router.message(Command("repair"))
+    async def repair_handler(message: Message) -> None:
+        if not await require_admin(message):
+            return
+        await repair_vpn_from_bot(message)
 
     @router.message(Command("restart"))
     async def restart_handler(message: Message) -> None:
@@ -258,15 +326,129 @@ async def _run_bot() -> None:
                     caption=f"Конфиг WireGuard: {name}",
                 )
         except KeyError:
-            await message.answer("Такой пользователь не найден. Админ может создать: /add " + name)
+            await message.answer("Такое устройство не найдено. Админ может создать: /add " + name)
         except Exception as exc:
             await message.answer(f"Не смог отправить конфиг: {exc}")
+
+    async def send_status(message: Message) -> None:
+        try:
+            statuses = await run_blocking(peer_status, remote)
+        except Exception as exc:
+            await message.answer(f"Не смог получить статус: {exc}")
+            return
+        if not statuses:
+            await message.answer("Устройств пока нет.")
+            return
+        lines = []
+        for item in statuses:
+            age = item["handshake_age"]
+            if age is None:
+                state_text = "не подключалось"
+            elif age <= 120:
+                state_text = f"онлайн, handshake {age} сек назад"
+            else:
+                state_text = f"давно не было handshake: {age // 60} мин назад"
+            endpoint_text = item["endpoint"] or "endpoint отсутствует"
+            lines.append(
+                f"{item['name']} ({item['address']}): {state_text}\n"
+                f"  {endpoint_text}\n"
+                f"  rx={_format_bytes(item['rx'])}, tx={_format_bytes(item['tx'])}"
+            )
+        await message.answer("\n\n".join(lines))
+
+    async def repair_vpn_from_bot(message: Message) -> None:
+        await message.answer("Пересобираю конфиг и перезапускаю WireGuard...")
+        lines: list[str] = []
+        try:
+            state = await run_blocking(
+                repair_vpn,
+                remote,
+                progress=progress_to_lines(lines),
+            )
+        except Exception as exc:
+            await message.answer(_chunk_text(f"Repair не удался:\n{exc}"))
+            return
+        await message.answer(
+            "VPN пересобран и перезапущен.\n"
+            f"Endpoint: {state['endpoint']}:{state['listen_port']}\n\n"
+            + "\n".join(f"- {line}" for line in lines[-10:])
+        )
 
     @router.message(F.text)
     async def name_handler(message: Message) -> None:
         text = (message.text or "").strip()
         if not text or text.startswith("/"):
             return
+
+        action = pending_actions.pop(message.chat.id, "")
+        if action == "get_config":
+            await send_peer_files(message, text.split()[0])
+            return
+        if action == "add_device":
+            if not await require_admin(message):
+                return
+            name = text.split()[0]
+            try:
+                peer = await run_blocking(add_peer, remote, name)
+            except Exception as exc:
+                await message.answer(f"Не смог добавить устройство: {exc}")
+                return
+            await message.answer(f"Устройство готово: {peer['name']} {peer['address']}")
+            await send_peer_files(message, name)
+            return
+        if action == "remove_device":
+            if not await require_admin(message):
+                return
+            name = text.split()[0]
+            try:
+                removed = await run_blocking(remove_peer, remote, name)
+            except Exception as exc:
+                await message.answer(f"Не смог удалить устройство: {exc}")
+                return
+            await message.answer(
+                f"Удалено: {name}" if removed else f"Не найдено: {name}"
+            )
+            return
+
+        if text == "Получить конфиг":
+            pending_actions[message.chat.id] = "get_config"
+            await message.answer("Напиши имя устройства, например dima-iphone.")
+            return
+        if text == "Добавить устройство":
+            if not await require_admin(message):
+                return
+            pending_actions[message.chat.id] = "add_device"
+            await message.answer("Напиши новое имя устройства, например dima-iphone.")
+            return
+        if text == "Список устройств":
+            if not await require_admin(message):
+                return
+            await list_handler(message)
+            return
+        if text == "Статус VPN":
+            if not await require_admin(message):
+                return
+            await send_status(message)
+            return
+        if text == "Починить VPN":
+            if not await require_admin(message):
+                return
+            await repair_vpn_from_bot(message)
+            return
+        if text == "Перезапустить VPN":
+            if not await require_admin(message):
+                return
+            await restart_handler(message)
+            return
+        if text == "Диагностика":
+            if not await require_admin(message):
+                return
+            await diagnose_handler(message)
+            return
+        if text == "Помощь":
+            await help_handler(message)
+            return
+
         name = text.split()[0]
         await send_peer_files(message, name)
 
@@ -280,3 +462,13 @@ def _chunk_text(text: str, limit: int = 3900) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 80] + "\n\n...output truncated..."
+
+
+def _format_bytes(value: int) -> str:
+    units = ["B", "KiB", "MiB", "GiB"]
+    size = float(value)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{value} B"

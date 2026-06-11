@@ -309,6 +309,62 @@ def list_peers(
     return sorted(state.get("peers", {}).values(), key=lambda item: item["name"])
 
 
+def peer_status(remote: Runner, progress: Progress | None = None) -> list[dict[str, Any]]:
+    emit(progress, "Loading WireGuard peer status")
+    state = require_state(remote)
+    peers = state.get("peers", {})
+    public_to_name = {
+        peer.get("public_key"): name for name, peer in peers.items() if peer.get("public_key")
+    }
+    dump = remote.run_root_script("wg show wg0 dump 2>/dev/null || true", check=False)
+    live: dict[str, dict[str, Any]] = {}
+    for line in dump.splitlines()[1:]:
+        parts = line.split("\t")
+        if len(parts) < 8:
+            continue
+        public_key, _psk, endpoint, allowed_ips, latest, rx, tx, keepalive = parts[:8]
+        live[public_key] = {
+            "endpoint": "" if endpoint == "(none)" else endpoint,
+            "allowed_ips": allowed_ips,
+            "latest_handshake": int(latest or "0"),
+            "rx": int(rx or "0"),
+            "tx": int(tx or "0"),
+            "persistent_keepalive": int(keepalive or "0"),
+        }
+
+    result = []
+    for name, peer in sorted(peers.items(), key=lambda item: item[0]):
+        status = live.get(peer.get("public_key"), {})
+        latest = int(status.get("latest_handshake") or 0)
+        result.append(
+            {
+                "name": name,
+                "address": peer.get("address", ""),
+                "endpoint": status.get("endpoint", ""),
+                "latest_handshake": latest,
+                "handshake_age": max(0, int(datetime.now(timezone.utc).timestamp()) - latest)
+                if latest
+                else None,
+                "rx": int(status.get("rx") or 0),
+                "tx": int(status.get("tx") or 0),
+                "public_key": peer.get("public_key", ""),
+                "known_to_wg": peer.get("public_key") in live,
+                "name_from_public_key": public_to_name.get(peer.get("public_key"), name),
+            }
+        )
+    return result
+
+
+def repair_vpn(remote: Runner, progress: Progress | None = None) -> dict[str, Any]:
+    emit(progress, "Repairing WireGuard from saved state")
+    state = require_state(remote)
+    private_key = remote.read_root_file(SERVER_PRIVATE).strip()
+    write_server_config(remote, state, private_key, progress=progress)
+    apply_service(remote, progress=progress)
+    emit(progress, "Repair completed")
+    return state
+
+
 def diagnose(remote: Runner, progress: Progress | None = None) -> str:
     emit(progress, "Collecting diagnostics")
     return remote.run_root_script(

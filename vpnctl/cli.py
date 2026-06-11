@@ -13,6 +13,8 @@ from .wireguard import (
     ensure_server,
     export_peer,
     list_peers,
+    peer_status,
+    repair_vpn,
     reboot_server,
     remove_peer,
     restart_wireguard,
@@ -58,7 +60,9 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--qr", action="store_true")
 
     sub.add_parser("list-users", help="List configured clients")
+    sub.add_parser("status", help="Show WireGuard device status")
     sub.add_parser("diagnose", help="Print WireGuard, network and firewall diagnostics")
+    sub.add_parser("repair", help="Rewrite config and restart WireGuard from saved state")
 
     restart = sub.add_parser("restart", help="Restart WireGuard or reboot the VPS")
     restart.add_argument(
@@ -169,8 +173,38 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{peer['name']}: {peer['address']}")
             return 0
 
+        if args.command == "status":
+            statuses = peer_status(remote, progress=progress)
+            if not statuses:
+                print("No users yet.")
+                return 0
+            for item in statuses:
+                age = item["handshake_age"]
+                if age is None:
+                    handshake = "never"
+                elif age < 120:
+                    handshake = f"{age}s ago"
+                else:
+                    handshake = f"{age // 60}m ago"
+                endpoint = item["endpoint"] or "no endpoint"
+                print(
+                    f"{item['name']}: {item['address']} "
+                    f"handshake={handshake} endpoint={endpoint} "
+                    f"rx={item['rx']} tx={item['tx']}"
+                )
+            return 0
+
         if args.command == "diagnose":
             print(diagnose(remote, progress=progress))
+            return 0
+
+        if args.command == "repair":
+            state = repair_vpn(remote, progress=progress)
+            print(
+                "WireGuard repaired: "
+                f"{state['endpoint']}:{state['listen_port']} "
+                f"network={state['network']}"
+            )
             return 0
 
         if args.command == "restart":

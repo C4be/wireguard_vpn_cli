@@ -9,7 +9,8 @@ The bot flow is simple:
 - a user sends a WireGuard device name, for example `dima-iphone`;
 - if that user exists, the bot sends a QR image and the `.conf` file;
 - an admin unlocks management commands with a password and can add/remove users,
-  restart WireGuard, run diagnostics, and run setup.
+  check device status, repair WireGuard, restart it, run diagnostics, and run
+  setup.
 
 ## Requirements
 
@@ -104,8 +105,22 @@ Admin commands in Telegram:
 /add dima-iphone
 /remove dima-iphone
 /list
+/status
+/repair
 /restart
 /diagnose
+```
+
+After `/admin`, the bot also shows a button menu:
+
+```text
+Получить конфиг
+Добавить устройство
+Список устройств
+Статус VPN
+Починить VPN
+Перезапустить VPN
+Диагностика
 ```
 
 User flow:
@@ -157,6 +172,8 @@ sudo -E .venv/bin/python -m vpnctl add-user dima-iphone --qr
 sudo -E .venv/bin/python -m vpnctl export-user dima-iphone --qr
 sudo -E .venv/bin/python -m vpnctl remove-user dima-iphone
 sudo -E .venv/bin/python -m vpnctl list-users
+sudo -E .venv/bin/python -m vpnctl status
+sudo -E .venv/bin/python -m vpnctl repair
 sudo -E .venv/bin/python -m vpnctl restart
 sudo -E .venv/bin/python -m vpnctl diagnose
 ```
@@ -172,3 +189,7 @@ sudo -E .venv/bin/python -m vpnctl diagnose
 - One WireGuard config is for one physical device only. Do not import the same
   QR on two phones; create names like `dima-iphone`, `dima-ipad`,
   `nata-android`.
+- `repair` rewrites `/etc/wireguard/wg0.conf` from saved state, reconciles stale
+  `wg0` interfaces, reapplies NAT/MSS rules, and restarts WireGuard.
+- `status` shows the latest handshake, endpoint, and transfer counters per
+  device.
