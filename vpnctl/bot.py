@@ -74,7 +74,7 @@ async def _run_bot() -> None:
     admin_password = _env_required("VPNCTL_ADMIN_PASSWORD")
     endpoint = os.environ.get("VPNCTL_ENDPOINT", "").strip()
     ssh_port = int(os.environ.get("VPNCTL_SSH_PORT", "22"))
-    listen_port = int(os.environ.get("VPNCTL_LISTEN_PORT", "51820"))
+    listen_port = int(os.environ.get("VPNCTL_LISTEN_PORT", "443"))
     network = os.environ.get("VPNCTL_NETWORK", "10.66.66.0/24")
     dns = os.environ.get("VPNCTL_DNS", "1.1.1.1, 8.8.8.8")
     mtu = int(os.environ.get("VPNCTL_MTU", "1280"))
@@ -104,8 +104,10 @@ async def _run_bot() -> None:
     @router.message(Command("start", "help"))
     async def help_handler(message: Message) -> None:
         await message.answer(
-            "Напиши имя пользователя, например: dima\n"
+            "Напиши имя устройства, например: dima-iphone\n"
             "Если такой пользователь есть, я отправлю WireGuard QR и .conf.\n\n"
+            "Важно: один конфиг WireGuard = одно физическое устройство.\n"
+            "Для второго телефона создай отдельное имя.\n\n"
             "Админ-команды:\n"
             "/admin <пароль>\n"
             "/setup [endpoint]\n"
@@ -169,7 +171,7 @@ async def _run_bot() -> None:
             return
         name = (command.args or "").strip()
         if not name:
-            await message.answer("Формат: /add dima")
+            await message.answer("Формат: /add dima-iphone")
             return
         try:
             peer = await run_blocking(add_peer, remote, name)
@@ -185,7 +187,7 @@ async def _run_bot() -> None:
             return
         name = (command.args or "").strip()
         if not name:
-            await message.answer("Формат: /remove dima")
+            await message.answer("Формат: /remove dima-iphone")
             return
         try:
             removed = await run_blocking(remove_peer, remote, name)

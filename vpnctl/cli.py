@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--endpoint",
         help="Public VPS IP address or DNS name for WireGuard clients.",
     )
-    setup.add_argument("--listen-port", type=int, default=51820)
+    setup.add_argument("--listen-port", type=int, default=443)
     setup.add_argument("--ssh-port", type=int, default=22)
     setup.add_argument("--network", default="10.66.66.0/24")
     setup.add_argument("--dns", default="1.1.1.1, 8.8.8.8")

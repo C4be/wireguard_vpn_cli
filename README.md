@@ -6,7 +6,7 @@ is the only place where the tool runs.
 
 The bot flow is simple:
 
-- a user sends a WireGuard username, for example `dima`;
+- a user sends a WireGuard device name, for example `dima-iphone`;
 - if that user exists, the bot sends a QR image and the `.conf` file;
 - an admin unlocks management commands with a password and can add/remove users,
   restart WireGuard, run diagnostics, and run setup.
@@ -16,7 +16,7 @@ The bot flow is simple:
 - VPS with Python 3.10+.
 - Debian/Ubuntu or Fedora/RHEL-like Linux.
 - Run setup and the bot as `root`, or as a user with passwordless `sudo`.
-- Public UDP port `51820` open in the VPS provider firewall.
+- Public UDP port `443` open in the VPS provider firewall.
 - Telegram bot token from BotFather.
 
 ## Install
@@ -50,7 +50,7 @@ Optional settings:
 ```bash
 export VPNCTL_ADMIN_CHAT_IDS="123456789,987654321"
 export VPNCTL_SSH_PORT="22"
-export VPNCTL_LISTEN_PORT="51820"
+export VPNCTL_LISTEN_PORT="443"
 export VPNCTL_NETWORK="10.66.66.0/24"
 export VPNCTL_DNS="1.1.1.1, 8.8.8.8"
 export VPNCTL_MTU="1280"
@@ -58,6 +58,10 @@ export VPNCTL_MTU="1280"
 
 `VPNCTL_ENDPOINT` is the public IP or DNS name that phones will use in their
 WireGuard profiles.
+
+`UDP 443` is the default WireGuard port because it survives more Wi-Fi networks
+than the usual `51820`. Pure WireGuard still cannot work on networks that block
+all outbound UDP traffic.
 
 ## First Setup
 
@@ -97,8 +101,8 @@ Admin commands in Telegram:
 ```text
 /admin <password>
 /setup [endpoint]
-/add dima
-/remove dima
+/add dima-iphone
+/remove dima-iphone
 /list
 /restart
 /diagnose
@@ -107,10 +111,10 @@ Admin commands in Telegram:
 User flow:
 
 ```text
-dima
+dima-iphone
 ```
 
-The bot replies with `dima.png` QR and `dima.conf`.
+The bot replies with `dima-iphone.png` QR and `dima-iphone.conf`.
 
 ## systemd Service
 
@@ -149,9 +153,9 @@ sudo systemctl status vpnctl-bot --no-pager -l
 These commands still work directly on the VPS:
 
 ```bash
-sudo -E .venv/bin/python -m vpnctl add-user dima --qr
-sudo -E .venv/bin/python -m vpnctl export-user dima --qr
-sudo -E .venv/bin/python -m vpnctl remove-user dima
+sudo -E .venv/bin/python -m vpnctl add-user dima-iphone --qr
+sudo -E .venv/bin/python -m vpnctl export-user dima-iphone --qr
+sudo -E .venv/bin/python -m vpnctl remove-user dima-iphone
 sudo -E .venv/bin/python -m vpnctl list-users
 sudo -E .venv/bin/python -m vpnctl restart
 sudo -E .venv/bin/python -m vpnctl diagnose
@@ -165,3 +169,6 @@ sudo -E .venv/bin/python -m vpnctl diagnose
   before starting `wg-quick@wg0`.
 - User names may contain only letters, digits, dots, underscores and dashes, and
   must start with a letter or digit.
+- One WireGuard config is for one physical device only. Do not import the same
+  QR on two phones; create names like `dima-iphone`, `dima-ipad`,
+  `nata-android`.

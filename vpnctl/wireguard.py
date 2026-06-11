@@ -25,7 +25,7 @@ Runner = Local
 @dataclass(frozen=True)
 class ServerOptions:
     endpoint: str
-    listen_port: int = 51820
+    listen_port: int = 443
     ssh_port: int = 22
     network: str = "10.66.66.0/24"
     dns: str = "1.1.1.1, 8.8.8.8"
@@ -314,7 +314,7 @@ def diagnose(remote: Runner, progress: Progress | None = None) -> str:
     return remote.run_root_script(
         f"""
 set +e
-WG_PORT="51820"
+WG_PORT="443"
 if [ -f {shlex.quote(STATE_FILE)} ]; then
   DETECTED_PORT="$(sed -n 's/.*"listen_port": \\([0-9][0-9]*\\).*/\\1/p' {shlex.quote(STATE_FILE)} | head -n1)"
   [ -n "$DETECTED_PORT" ] && WG_PORT="$DETECTED_PORT"
