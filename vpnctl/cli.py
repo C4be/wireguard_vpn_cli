@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from .emailer import EmailConfigError, send_config_email
-from .remote import Remote, RemoteError
+from .remote import Local, Remote, RemoteError
 from .wireguard import (
     ServerOptions,
     add_peer,
@@ -24,9 +24,15 @@ DEFAULT_EMAIL = "dmitrycube@yandex.ru"
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vpnctl",
-        description="SSH-driven WireGuard manager for a personal VPS.",
+        description="WireGuard manager for a personal VPS.",
     )
-    parser.add_argument("--host", required=True, help="VPS IP address or DNS name")
+    parser.add_argument(
+        "--host",
+        help=(
+            "Optional VPS IP address or DNS name. If omitted, vpnctl runs "
+            "directly on this server."
+        ),
+    )
     parser.add_argument("--user", default="root", help="SSH user, default: root")
     parser.add_argument("--port", type=int, default=22, help="SSH port, default: 22")
     parser.add_argument("--identity", help="Path to SSH private key")
@@ -34,7 +40,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     setup = sub.add_parser("setup", help="Install and configure WireGuard")
-    setup.add_argument("--endpoint", help="Public endpoint for clients; defaults to --host")
+    setup.add_argument(
+        "--endpoint",
+        help=(
+            "Public endpoint for clients. Defaults to --host in SSH mode; "
+            "required when running directly on the VPS."
+        ),
+    )
     setup.add_argument("--listen-port", type=int, default=51820)
     setup.add_argument("--ssh-port", type=int, default=22)
     setup.add_argument("--network", default="10.66.66.0/24")
@@ -71,7 +83,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def make_remote(args: argparse.Namespace) -> Remote:
+def make_remote(args: argparse.Namespace) -> Remote | Local:
+    if not args.host:
+        return Local()
     return Remote(
         host=args.host,
         user=args.user,
@@ -88,6 +102,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "setup":
             endpoint = args.endpoint or args.host
+            if not endpoint:
+                raise RuntimeError(
+                    "Pass setup --endpoint with the VPS public IP or DNS name "
+                    "when running directly on the VPS."
+                )
             state = ensure_server(
                 remote,
                 ServerOptions(

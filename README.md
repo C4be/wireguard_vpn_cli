@@ -1,7 +1,7 @@
 # vpnctl
 
-`vpnctl` is a small CLI that configures WireGuard on a remote VPS over SSH, keeps
-the SSH path open, and manages mobile-ready client configs for iOS and Android.
+`vpnctl` is a small CLI that configures WireGuard on a VPS, keeps the SSH path
+open, and manages mobile-ready client configs for iOS and Android.
 
 The recommended mode is native WireGuard on the VPS. Docker is detected in
 diagnostics, but WireGuard itself runs as a systemd service because it is easier
@@ -9,16 +9,17 @@ to audit, repair and keep alive after reboots than a privileged VPN container.
 
 ## Requirements
 
-- Local machine: Python 3.10+, `ssh`.
-- VPS: Debian/Ubuntu, Fedora/RHEL-like Linux with SSH access as `root` or a user
-  with passwordless `sudo`.
+- VPS: Python 3.10+, Debian/Ubuntu or Fedora/RHEL-like Linux.
+- Run commands as `root`, or as a user with passwordless `sudo`.
 - Public UDP port `51820` open at the cloud/VPS provider level.
 
 ## First setup
 
+Run this directly on the VPS:
+
 ```bash
-python3 -m vpnctl --host YOUR_VPS_IP --user root setup \
-  --endpoint YOUR_VPS_IP \
+sudo python3 -m vpnctl setup \
+  --endpoint YOUR_VPS_PUBLIC_IP_OR_DOMAIN \
   --ssh-port 22
 ```
 
@@ -34,7 +35,7 @@ What setup does:
 ## Add a phone or another user
 
 ```bash
-python3 -m vpnctl --host YOUR_VPS_IP add-user dima --qr
+sudo python3 -m vpnctl add-user dima --qr
 ```
 
 The config will be written to `configs/dima.conf`; the QR image will be written
@@ -60,7 +61,7 @@ export VPNCTL_SMTP_PASSWORD="YOUR_YANDEX_APP_PASSWORD"
 Then:
 
 ```bash
-python3 -m vpnctl --host YOUR_VPS_IP add-user friend \
+sudo python3 -m vpnctl add-user friend \
   --email dmitrycube@yandex.ru \
   --send-email
 ```
@@ -74,9 +75,9 @@ Optional SMTP settings:
 ## Manage users
 
 ```bash
-python3 -m vpnctl --host YOUR_VPS_IP list-users
-python3 -m vpnctl --host YOUR_VPS_IP export-user dima --qr
-python3 -m vpnctl --host YOUR_VPS_IP remove-user dima
+sudo python3 -m vpnctl list-users
+sudo python3 -m vpnctl export-user dima --qr
+sudo python3 -m vpnctl remove-user dima
 ```
 
 ## Restart and diagnostics
@@ -84,19 +85,19 @@ python3 -m vpnctl --host YOUR_VPS_IP remove-user dima
 Restart only WireGuard:
 
 ```bash
-python3 -m vpnctl --host YOUR_VPS_IP restart
+sudo python3 -m vpnctl restart
 ```
 
 Reboot the whole VPS:
 
 ```bash
-python3 -m vpnctl --host YOUR_VPS_IP restart --reboot
+sudo python3 -m vpnctl restart --reboot
 ```
 
 Print diagnostics:
 
 ```bash
-python3 -m vpnctl --host YOUR_VPS_IP diagnose
+sudo python3 -m vpnctl diagnose
 ```
 
 Diagnostics include the managed state, default route, UDP listener, systemd
@@ -107,9 +108,24 @@ installed.
 
 - Run `setup` again after changing endpoint, DNS or SSH port. It is idempotent
   and keeps existing users.
+- `setup --endpoint` must be the public IP or DNS name that phones will use to
+  reach the VPS.
 - Changing the VPN subnet is blocked while users exist, because existing client
   addresses would otherwise become inconsistent.
 - Existing unmanaged WireGuard config is backed up before `vpnctl` writes its own
   `/etc/wireguard/wg0.conf`.
-- If SSH runs on a non-standard port, pass both `--port` for the SSH connection
-  and `setup --ssh-port` for firewall preservation.
+- If SSH runs on a non-standard port, pass `setup --ssh-port YOUR_PORT` for
+  firewall preservation.
+
+## Optional SSH mode
+
+You can still control the VPS remotely from another machine by adding `--host`:
+
+```bash
+python3 -m vpnctl --host YOUR_VPS_IP --user root setup \
+  --endpoint YOUR_VPS_IP \
+  --ssh-port 22
+```
+
+In SSH mode, `--port` is the SSH connection port, and `setup --ssh-port` is the
+port that vpnctl preserves in the VPS firewall.
