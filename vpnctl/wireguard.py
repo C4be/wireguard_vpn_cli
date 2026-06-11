@@ -332,6 +332,8 @@ command -v docker >/dev/null 2>&1 && docker --version || echo "docker: not insta
 echo
 echo "== network =="
 ip route show default
+ip route get 1.1.1.1
+ip route get 8.8.8.8
 sysctl net.ipv4.ip_forward
 ss -lunp | grep -E "(:$WG_PORT|wireguard)" || true
 echo
@@ -346,10 +348,12 @@ command -v ufw >/dev/null 2>&1 && ufw status verbose || true
 command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --list-all || true
 iptables -t nat -S | grep -E '(MASQUERADE|wg0)' || true
 iptables -S FORWARD | grep wg0 || true
+iptables -t mangle -S FORWARD | grep -E '(TCPMSS|wg0)' || true
 echo
 echo "== firewall counters =="
 iptables -vnL FORWARD 2>&1
 iptables -t nat -vnL POSTROUTING 2>&1
+iptables -t mangle -vnL FORWARD 2>&1
 """,
         check=False,
     )
@@ -428,14 +432,18 @@ AllowedIPs = {peer['address']}
     peer_text = "\n".join(peer_blocks).strip()
     post_up_lines = [
         "sysctl -w net.ipv4.ip_forward=1 >/dev/null",
-        f"iptables -w -C FORWARD -i {interface} -o {default_interface} -j ACCEPT 2>/dev/null || iptables -w -A FORWARD -i {interface} -o {default_interface} -j ACCEPT",
-        f"iptables -w -C FORWARD -i {default_interface} -o {interface} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -w -A FORWARD -i {default_interface} -o {interface} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
-        f"iptables -w -t nat -C POSTROUTING -s {network} -o {default_interface} -j MASQUERADE 2>/dev/null || iptables -w -t nat -A POSTROUTING -s {network} -o {default_interface} -j MASQUERADE",
+        f"iptables -w -C FORWARD -i {interface} -o {default_interface} -j ACCEPT 2>/dev/null || iptables -w -I FORWARD 1 -i {interface} -o {default_interface} -j ACCEPT",
+        f"iptables -w -C FORWARD -i {default_interface} -o {interface} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -w -I FORWARD 1 -i {default_interface} -o {interface} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+        f"iptables -w -t nat -C POSTROUTING -s {network} -o {default_interface} -j MASQUERADE 2>/dev/null || iptables -w -t nat -I POSTROUTING 1 -s {network} -o {default_interface} -j MASQUERADE",
+        f"iptables -w -t mangle -C FORWARD -i {interface} -o {default_interface} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240 2>/dev/null || iptables -w -t mangle -I FORWARD 1 -i {interface} -o {default_interface} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240",
+        f"iptables -w -t mangle -C FORWARD -i {default_interface} -o {interface} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240 2>/dev/null || iptables -w -t mangle -I FORWARD 1 -i {default_interface} -o {interface} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240",
     ]
     post_down_lines = [
         f"iptables -w -D FORWARD -i {interface} -o {default_interface} -j ACCEPT 2>/dev/null || true",
         f"iptables -w -D FORWARD -i {default_interface} -o {interface} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true",
         f"iptables -w -t nat -D POSTROUTING -s {network} -o {default_interface} -j MASQUERADE 2>/dev/null || true",
+        f"iptables -w -t mangle -D FORWARD -i {interface} -o {default_interface} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240 2>/dev/null || true",
+        f"iptables -w -t mangle -D FORWARD -i {default_interface} -o {interface} -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240 2>/dev/null || true",
     ]
     post_up = "\n".join(f"PostUp = {line}" for line in post_up_lines)
     post_down = "\n".join(f"PostDown = {line}" for line in post_down_lines)
@@ -499,10 +507,13 @@ if ip link show wg0 >/dev/null 2>&1; then
 fi
 while iptables -w -D FORWARD -i wg0 -j ACCEPT 2>/dev/null; do :; done
 while iptables -w -D FORWARD -o wg0 -j ACCEPT 2>/dev/null; do :; done
+while iptables -w -D FORWARD -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do :; done
 while iptables -w -D FORWARD -i wg0 -o "$OUT_IF" -j ACCEPT 2>/dev/null; do :; done
 while iptables -w -D FORWARD -i "$OUT_IF" -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do :; done
 while iptables -w -D FORWARD -i "$OUT_IF" -o wg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do :; done
 while iptables -w -t nat -D POSTROUTING -s "$WG_NET" -o "$OUT_IF" -j MASQUERADE 2>/dev/null; do :; done
+while iptables -w -t mangle -D FORWARD -i wg0 -o "$OUT_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240 2>/dev/null; do :; done
+while iptables -w -t mangle -D FORWARD -i "$OUT_IF" -o wg0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240 2>/dev/null; do :; done
 systemctl reset-failed wg-quick@wg0 >/dev/null 2>&1
 """,
         check=False,
